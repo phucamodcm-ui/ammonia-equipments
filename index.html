@@ -134,6 +134,20 @@ h1,h2,h3,.display{font-family:'Barlow Semi Condensed',sans-serif;font-weight:800
   color:var(--steel);font-size:13px;background:#FAFBF9;
 }
 .photo-drop img{max-width:100%;max-height:180px;border-radius:6px;margin-top:8px;}
+
+.photo-queue{display:flex;flex-wrap:wrap;gap:8px;}
+.photo-tile{position:relative;width:74px;height:74px;border-radius:8px;overflow:hidden;border:1px solid var(--line);flex-shrink:0;}
+.photo-tile img{width:100%;height:100%;object-fit:cover;display:block;}
+.photo-tile .rm{position:absolute;top:2px;right:2px;width:19px;height:19px;border-radius:50%;background:rgba(11,25,18,.75);color:#fff;border:none;font-size:12px;cursor:pointer;line-height:1;}
+.photo-add-tile{
+  width:74px;height:74px;border-radius:8px;border:2px dashed var(--line);flex-shrink:0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  color:var(--steel);font-size:11px;cursor:pointer;background:#FAFBF9;text-align:center;line-height:1.3;gap:2px;
+}
+.photo-add-tile span{font-size:18px;}
+.photo-count{font-size:11.5px;color:var(--steel);margin-top:6px;}
+
+.print-header{display:none;}
 .form-actions{display:flex;gap:10px;margin-top:18px;}
 .btn-primary{flex:1;background:var(--green-bright);color:#fff;border:none;border-radius:8px;padding:12px;font-weight:700;font-size:15px;cursor:pointer;font-family:'Barlow Semi Condensed';letter-spacing:.3px;}
 .btn-secondary{background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 18px;cursor:pointer;color:var(--steel);font-weight:600;}
@@ -164,10 +178,19 @@ h1,h2,h3,.display{font-family:'Barlow Semi Condensed',sans-serif;font-weight:800
 .setup-banner code{background:#fff;padding:1px 5px;border-radius:4px;}
 
 @media print{
-  .topbar,.filter-bar,.btn-add,.dash .chart-card,.stat-row,.setup-banner,.load-more-row{display:none !important;}
+  .topbar,.filter-bar,.btn-add,.dash .chart-card,.stat-row,.setup-banner,.load-more-row,.result-count{display:none !important;}
   body{background:#fff;}
-  .grid{grid-template-columns:repeat(3,1fr);}
+  @page{margin:14mm 10mm;}
+  .print-header{display:block !important;margin:0 0 14px;border-bottom:2px solid #0B3B2A;padding-bottom:8px;}
+  .print-header h2{margin:0;font-size:17px;color:#0B3B2A;font-family:'Barlow Semi Condensed';}
+  .print-header .sub{font-size:10.5px;color:#555;margin-top:3px;}
+  .grid{grid-template-columns:repeat(3,1fr);padding:0;gap:10px;}
   .tag-card{break-inside:avoid;box-shadow:none;border:1px solid #ccc;}
+  .tag-card .rivet{display:none;}
+  .thumb-wrap{background:#f2f2f2;}
+  .card-title{font-size:13px;}
+  .card-tag{font-size:9.5px;}
+  .card-meta{font-size:10px;}
 }
 </style>
 </head>
@@ -182,6 +205,8 @@ h1,h2,h3,.display{font-family:'Barlow Semi Condensed',sans-serif;font-weight:800
   <div class="spacer"></div>
   <button class="btn-add" onclick="openAddModal()">＋ Thêm ảnh</button>
 </div>
+
+<div class="print-header" id="printHeader"></div>
 
 <div id="setupBanner" class="setup-banner" style="display:none;">
   ⚠ Chưa cấu hình địa chỉ API. Mở file <code>index.html</code>, sửa biến <code>APPS_SCRIPT_URL</code> ở cuối file thành link Web App Google Apps Script của bạn.
@@ -247,12 +272,12 @@ h1,h2,h3,.display{font-family:'Barlow Semi Condensed',sans-serif;font-weight:800
           <select id="fdNguoi" required><option value="">— Chọn người nhập —</option></select>
         </div>
         <div class="field">
-          <label>Ảnh thiết bị *</label>
-          <div class="photo-drop" onclick="document.getElementById('fdFile').click()">
-            <div id="photoDropText">📷 Bấm để chọn hoặc chụp ảnh</div>
-            <img id="photoPreview" style="display:none;">
+          <label>Ảnh thiết bị * (có thể thêm nhiều ảnh)</label>
+          <div class="photo-queue" id="photoQueue">
+            <div class="photo-add-tile" onclick="document.getElementById('fdFile').click()"><span>＋</span>Thêm ảnh</div>
           </div>
-          <input type="file" id="fdFile" accept="image/*" capture="environment" style="display:none" onchange="onPhotoSelected(event)">
+          <div class="photo-count" id="photoCount"></div>
+          <input type="file" id="fdFile" accept="image/*" multiple style="display:none" onchange="onPhotoSelected(event)">
         </div>
         <div class="form-actions">
           <button type="button" class="btn-secondary" onclick="closeAddModal()">Hủy</button>
@@ -280,7 +305,7 @@ h1,h2,h3,.display{font-family:'Barlow Semi Condensed',sans-serif;font-weight:800
 
 <script>
 /* ================= CONFIG ================= */
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwXyjYB0vp7zGt54kpfuDZuyIQL88NieKEmQVVpsG9il0z1kWvlC9FwTRy1UwsNXWZaCg/exec'; // <-- DÁN LINK WEB APP GOOGLE APPS SCRIPT VÀO ĐÂY
+const APPS_SCRIPT_URL = ''; // <-- DÁN LINK WEB APP GOOGLE APPS SCRIPT VÀO ĐÂY
 const PAGE_SIZE = 24;
 
 /* ================= STATE ================= */
@@ -341,9 +366,12 @@ async function apiPost(body) {
 async function loadMeta() {
   if (!APPS_SCRIPT_URL) { META = { clusters: ['Cụm 200','Cụm 300','Cụm 400','Cụm 500','Cụm 700'], users: [], locations: [] }; renderMetaOptions(); return; }
   try {
-    const r = await apiGet({ action: 'meta' });
+    const r = await apiGet({ action: 'meta', _: Date.now() }); // cache-buster: tránh trình duyệt/mobile lấy kết quả cũ đã cache
     if (r.ok) { META = r; renderMetaOptions(); }
-  } catch (e) { console.error(e); }
+    else showToast(r.error || 'Không tải được danh sách cụm/người nhập', 'error');
+  } catch (e) {
+    showToast('Không kết nối được API để tải danh sách cụm/người nhập', 'error');
+  }
 }
 
 function renderMetaOptions() {
@@ -501,35 +529,56 @@ function ensureSentinel() {
 }
 
 /* ================= ADD MODAL ================= */
-let pendingImageMain = null;  // ảnh chính (1600px, lưu Drive)
-let pendingImageThumb = null; // thumbnail nhỏ (nhúng thẳng vào Sheet)
+let pendingPhotos = []; // [{ main: base64 1600px (lưu Drive), thumb: base64 240px (nhúng Sheet) }, ...]
 
 function openAddModal() {
   document.getElementById('addForm').reset();
-  document.getElementById('photoPreview').style.display = 'none';
-  document.getElementById('photoDropText').style.display = 'block';
-  pendingImageMain = null; pendingImageThumb = null;
+  pendingPhotos = [];
+  renderPhotoQueue();
+  if (!META.users.length) showToast('Danh sách "Người nhập" đang trống (đang đọc từ tab "' + (META.usersSheetName || 'NguoiDung') + '") — kiểm tra đúng tên tab & có tên trong đó chưa', 'error');
   document.getElementById('addOverlay').classList.add('show');
 }
 function closeAddModal() { document.getElementById('addOverlay').classList.remove('show'); }
 
-function onPhotoSelected(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = async (ev) => {
-    const [main, thumb] = await Promise.all([
-      compressImage(ev.target.result, 1600, 0.75),
-      compressImage(ev.target.result, 240, 0.5)
-    ]);
-    pendingImageMain = main;
-    pendingImageThumb = thumb;
-    const prev = document.getElementById('photoPreview');
-    prev.src = main;
-    prev.style.display = 'block';
-    document.getElementById('photoDropText').style.display = 'none';
-  };
-  reader.readAsDataURL(file);
+async function onPhotoSelected(e) {
+  const files = Array.from(e.target.files || []);
+  if (!files.length) return;
+  showSpinner(true, 'Đang xử lý ảnh…');
+  try {
+    for (const file of files) {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = ev => resolve(ev.target.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      const [main, thumb] = await Promise.all([
+        compressImage(dataUrl, 1600, 0.75),
+        compressImage(dataUrl, 240, 0.5)
+      ]);
+      pendingPhotos.push({ main, thumb });
+    }
+    renderPhotoQueue();
+  } finally {
+    showSpinner(false);
+    e.target.value = ''; // cho phép chọn lại cùng 1 file / chụp thêm ảnh mới ở lần sau
+  }
+}
+
+function removePhoto(idx) {
+  pendingPhotos.splice(idx, 1);
+  renderPhotoQueue();
+}
+
+function renderPhotoQueue() {
+  const box = document.getElementById('photoQueue');
+  const tiles = pendingPhotos.map((p, idx) => `
+    <div class="photo-tile">
+      <img src="${p.thumb}">
+      <button type="button" class="rm" onclick="removePhoto(${idx})">×</button>
+    </div>`).join('');
+  box.innerHTML = tiles + `<div class="photo-add-tile" onclick="document.getElementById('fdFile').click()"><span>＋</span>Thêm ảnh</div>`;
+  document.getElementById('photoCount').textContent = pendingPhotos.length ? `Đã chọn ${pendingPhotos.length} ảnh` : '';
 }
 
 function compressImage(dataUrl, maxWidth, quality) {
@@ -551,12 +600,12 @@ async function saveRecord() {
   const ten = document.getElementById('fdTen').value.trim();
   const cum = document.getElementById('fdCum').value;
   const nguoi = document.getElementById('fdNguoi').value;
-  if (!ten || !cum || !nguoi || !pendingImageMain) {
-    showToast('Vui lòng điền đủ Tên thiết bị, Cụm, Người nhập và chọn ảnh', 'error'); return;
+  if (!ten || !cum || !nguoi || !pendingPhotos.length) {
+    showToast('Vui lòng điền đủ Tên thiết bị, Cụm, Người nhập và chọn ít nhất 1 ảnh', 'error'); return;
   }
   if (!APPS_SCRIPT_URL) { showToast('Chưa cấu hình APPS_SCRIPT_URL', 'error'); return; }
 
-  showSpinner(true, 'Đang lưu…');
+  showSpinner(true, pendingPhotos.length > 1 ? `Đang lưu ${pendingPhotos.length} ảnh…` : 'Đang lưu…');
   try {
     const body = {
       action: 'add',
@@ -565,21 +614,14 @@ async function saveRecord() {
       cum: cum,
       ghiChu: document.getElementById('fdGhiChu').value.trim(),
       nguoiNhap: nguoi,
-      imageBase64: pendingImageMain,
-      imageMime: 'image/jpeg',
-      thumbBase64: pendingImageThumb
+      images: pendingPhotos.map(p => ({ imageBase64: p.main, imageMime: 'image/jpeg', thumbBase64: p.thumb }))
     };
     const r = await apiPost(body);
     if (r.ok) {
-      LOADED_RECORDS.unshift(r.record);
-      document.getElementById('emptyState').style.display = 'none';
-      document.getElementById('grid').insertAdjacentHTML('afterbegin', cardHtml(r.record));
-      attachLazyThumbs();
-      document.getElementById('statLoaded').textContent = LOADED_RECORDS.length;
       closeAddModal();
-      showToast('Đã lưu thiết bị thành công', 'success');
+      showToast(`Đã lưu ${r.records.length} ảnh thành công`, 'success');
       loadMeta();
-      loadRecords(true); // đồng bộ lại số liệu thống kê + thứ tự chính xác từ server
+      loadRecords(true); // tải lại từ server để đúng thứ tự + số liệu thống kê
     } else {
       showToast(r.error || 'Lưu thất bại', 'error');
     }
@@ -662,27 +704,50 @@ async function exportExcel() {
   } finally { showSpinner(false); }
 }
 
+function buildFilterSummaryText() {
+  const p = currentFilterParams();
+  const parts = [];
+  if (p.q) parts.push('Từ khóa: "' + p.q + '"');
+  if (p.cum) parts.push('Cụm: ' + p.cum);
+  if (p.nguoiNhap) parts.push('Người nhập: ' + p.nguoiNhap);
+  if (p.tuNgay || p.denNgay) parts.push('Ngày: ' + (p.tuNgay || '…') + ' → ' + (p.denNgay || '…'));
+  return parts.length ? parts.join(' · ') : 'Không áp dụng bộ lọc';
+}
+
 async function handlePrint() {
   if (!APPS_SCRIPT_URL) { showToast('Chưa cấu hình APPS_SCRIPT_URL', 'error'); return; }
   showSpinner(true, 'Đang tải đầy đủ dữ liệu để in…');
   try {
-    const records = await fetchAllFiltered(); // có gocURL nhưng KHÔNG có thumbData (đã lược bỏ để nhẹ)
-    // Vì bản ghi export không có thumbData, dùng gocURL (ảnh Drive) trực tiếp cho bản in.
+    // mode=print giữ lại thumbData (ảnh nhúng sẵn) — không phụ thuộc mạng/Drive khi in
+    const params = Object.assign({ export: '1', mode: 'print' }, currentFilterParams());
+    const r = await apiGet(params);
+    if (!r.ok) throw new Error(r.error || 'Lỗi tải dữ liệu để in');
+    const records = r.records;
+    if (!records.length) { showToast('Không có dữ liệu khớp bộ lọc để in', 'error'); return; }
+
+    document.getElementById('printHeader').innerHTML = `
+      <h2>Danh sách thiết bị — Xưởng Ammonia, Phân Bón Cà Mau</h2>
+      <div class="sub">In lúc ${new Date().toLocaleString('vi-VN')} · ${escapeHtml(buildFilterSummaryText())} · Tổng cộng ${records.length} thiết bị</div>`;
+
     const grid = document.getElementById('grid');
     grid.innerHTML = records.map(r => `
       <div class="tag-card">
-        <div class="thumb-wrap"><img src="${r.gocURL || ''}" style="width:100%;height:100%;object-fit:cover;"></div>
+        <div class="thumb-wrap"><img src="${r.thumbData || ''}" onerror="this.style.display='none'" style="width:100%;height:100%;object-fit:cover;"></div>
         <div class="card-body">
           <div class="card-title">${escapeHtml(r.tenThietBi)}</div>
           <div class="card-tag mono">${escapeHtml(r.tagName)}_${String(r.soTT).padStart(3,'0')}</div>
           <div class="card-meta"><span>${escapeHtml(r.viTri||'—')}</span><span>${formatDate(r.ngayNhap)}</span></div>
         </div>
       </div>`).join('');
+
+    // Đợi TẤT CẢ ảnh load (hoặc lỗi) xong thật sự trước khi mở hộp thoại in —
+    // tránh in ra thẻ trống ảnh do Drive/mạng chưa kịp tải.
+    const imgs = Array.from(grid.querySelectorAll('img'));
+    await Promise.all(imgs.map(img => img.complete ? Promise.resolve() : new Promise(res => { img.onload = img.onerror = res; })));
+
     showSpinner(false);
-    setTimeout(() => {
-      window.print();
-      loadRecords(true); // khôi phục lại chế độ xem cuộn vô hạn bình thường sau khi in
-    }, 300);
+    window.print();
+    loadRecords(true); // khôi phục lại chế độ xem cuộn vô hạn bình thường sau khi in
   } catch (e) {
     showSpinner(false);
     showToast(e.message || 'Lỗi khi chuẩn bị bản in', 'error');
