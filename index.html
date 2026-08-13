@@ -147,6 +147,16 @@ h1,h2,h3,.display{font-family:'Barlow Semi Condensed',sans-serif;font-weight:800
 .photo-add-tile span{font-size:18px;}
 .photo-count{font-size:11.5px;color:var(--steel);margin-top:6px;}
 
+.ac-wrap{position:relative;}
+.ac-list{
+  position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;
+  border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 20px rgba(11,25,18,.15);
+  max-height:220px;overflow-y:auto;z-index:60;display:none;
+}
+.ac-list.show{display:block;}
+.ac-item{padding:9px 12px;font-size:13.5px;color:var(--ink);cursor:pointer;}
+.ac-item:hover,.ac-item.active{background:#EEF5EF;color:var(--green-deep);}
+
 .print-header{display:none;}
 .form-actions{display:flex;gap:10px;margin-top:18px;}
 .btn-primary{flex:1;background:var(--green-bright);color:#fff;border:none;border-radius:8px;padding:12px;font-weight:700;font-size:15px;cursor:pointer;font-family:'Barlow Semi Condensed';letter-spacing:.3px;}
@@ -228,7 +238,10 @@ h1,h2,h3,.display{font-family:'Barlow Semi Condensed',sans-serif;font-weight:800
   <div class="filter-bar">
     <input type="text" id="fSearch" placeholder="🔎 Tìm theo tên, vị trí, ghi chú, cụm, người nhập, mã tag hoặc số ảnh…">
     <select id="fCum"><option value="">Tất cả cụm</option></select>
-    <input type="text" id="fNguoi" list="nguoiList" placeholder="👤 Người nhập…" autocomplete="off">
+    <div class="ac-wrap" style="min-width:160px;">
+      <input type="text" id="fNguoi" placeholder="👤 Người nhập…" autocomplete="off">
+      <div class="ac-list" id="fNguoiList"></div>
+    </div>
     <div class="date-group">
       Từ <input type="date" id="fTuNgay"> đến <input type="date" id="fDenNgay">
     </div>
@@ -269,8 +282,10 @@ h1,h2,h3,.display{font-family:'Barlow Semi Condensed',sans-serif;font-weight:800
         </div>
         <div class="field">
           <label>Người nhập *</label>
-          <input type="text" id="fdNguoi" list="nguoiList" required placeholder="Gõ để tìm tên…" autocomplete="off">
-          <datalist id="nguoiList"></datalist>
+          <div class="ac-wrap">
+            <input type="text" id="fdNguoi" required placeholder="Gõ để tìm tên…" autocomplete="off">
+            <div class="ac-list" id="fdNguoiList"></div>
+          </div>
         </div>
         <div class="field">
           <label>Ảnh thiết bị * (có thể thêm nhiều ảnh)</label>
@@ -330,6 +345,62 @@ function bindFilterEvents() {
   let t;
   document.getElementById('fSearch').addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => loadRecords(true), 350); });
   ['fCum', 'fNguoi', 'fTuNgay', 'fDenNgay'].forEach(id => document.getElementById(id).addEventListener('change', () => loadRecords(true)));
+  setupAutocomplete(document.getElementById('fdNguoi'), document.getElementById('fdNguoiList'), () => META.users);
+  setupAutocomplete(document.getElementById('fNguoi'), document.getElementById('fNguoiList'), () => META.users);
+}
+
+/**
+ * Ô gõ-tìm tự viết thay cho <datalist> — Safari trên iPhone không hiển thị
+ * gợi ý của datalist, nên phải tự dựng để trải nghiệm đồng nhất trên mọi máy.
+ */
+function normalizeVN(s) {
+  s = (s || '').toString().toLowerCase();
+  s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  s = s.replace(/đ/g, 'd');
+  return s;
+}
+
+function setupAutocomplete(input, listEl, getOptions) {
+  let items = [];
+  let activeIndex = -1;
+
+  function render(filterText) {
+    const norm = normalizeVN(filterText);
+    const options = getOptions() || [];
+    items = (norm ? options.filter(o => normalizeVN(o).indexOf(norm) > -1) : options.slice()).slice(0, 8);
+    activeIndex = -1;
+    if (!items.length) { listEl.classList.remove('show'); listEl.innerHTML = ''; return; }
+    listEl.innerHTML = items.map((o, i) => `<div class="ac-item" data-idx="${i}">${escapeHtml(o)}</div>`).join('');
+    listEl.classList.add('show');
+  }
+
+  function highlight() {
+    Array.from(listEl.children).forEach((el, i) => el.classList.toggle('active', i === activeIndex));
+  }
+
+  function choose(val) {
+    input.value = val;
+    listEl.classList.remove('show');
+    input.dispatchEvent(new Event('change'));
+  }
+
+  input.addEventListener('input', () => render(input.value));
+  input.addEventListener('focus', () => render(input.value));
+  input.addEventListener('blur', () => setTimeout(() => listEl.classList.remove('show'), 150));
+  input.addEventListener('keydown', (e) => {
+    if (!listEl.classList.contains('show')) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); activeIndex = Math.min(activeIndex + 1, items.length - 1); highlight(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); activeIndex = Math.max(activeIndex - 1, 0); highlight(); }
+    else if (e.key === 'Enter') { if (activeIndex > -1) { e.preventDefault(); choose(items[activeIndex]); } }
+    else if (e.key === 'Escape') { listEl.classList.remove('show'); }
+  });
+  // mousedown (thay vì click) để chọn được TRƯỚC khi input mất focus (blur) trên mobile
+  listEl.addEventListener('mousedown', (e) => {
+    const item = e.target.closest('.ac-item');
+    if (!item) return;
+    e.preventDefault();
+    choose(items[parseInt(item.dataset.idx, 10)]);
+  });
 }
 
 function resetFilters() {
@@ -381,10 +452,6 @@ function renderMetaOptions() {
     sel.innerHTML = ''; sel.appendChild(keepFirst);
     META.clusters.forEach(c => sel.appendChild(new Option(c, c)));
   });
-
-  const nguoiDl = document.getElementById('nguoiList');
-  nguoiDl.innerHTML = '';
-  META.users.forEach(u => nguoiDl.appendChild(new Option(u, u)));
 
   const dl = document.getElementById('viTriList');
   dl.innerHTML = '';
