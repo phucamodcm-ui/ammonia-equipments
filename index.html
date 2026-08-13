@@ -307,7 +307,7 @@ h1,h2,h3,.display{font-family:'Barlow Semi Condensed',sans-serif;font-weight:800
 <script>
 /* ================= CONFIG ================= */
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwXyjYB0vp7zGt54kpfuDZuyIQL88NieKEmQVVpsG9il0z1kWvlC9FwTRy1UwsNXWZaCg/exec';
-const PAGE_SIZE = 24;
+const PAGE_SIZE = 10;
 
 /* ================= STATE ================= */
 let META = { clusters: [], users: [], locations: [] };
@@ -555,7 +555,7 @@ async function onPhotoSelected(e) {
       });
       const [main, thumb] = await Promise.all([
         compressImage(dataUrl, 1600, 0.75),
-        compressImage(dataUrl, 240, 0.5)
+        compressImage(dataUrl, 360, 0.6)
       ]);
       pendingPhotos.push({ main, thumb });
     }
