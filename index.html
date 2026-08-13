@@ -197,7 +197,7 @@ h1,h2,h3,.display{font-family:'Barlow Semi Condensed',sans-serif;font-weight:800
 <body>
 
 <div class="topbar">
-  <div class="brand-mark">PVC</div>
+  <div class="brand-mark">AMO</div>
   <div class="brand-text">
     <h1>Kho Ảnh Thiết Bị</h1>
     <span>Xưởng Ammonia · Phân Bón Cà Mau</span>
@@ -226,9 +226,9 @@ h1,h2,h3,.display{font-family:'Barlow Semi Condensed',sans-serif;font-weight:800
   </div>
 
   <div class="filter-bar">
-    <input type="text" id="fSearch" placeholder="🔎 Tìm tên thiết bị, vị trí, ghi chú, mã tag…">
+    <input type="text" id="fSearch" placeholder="🔎 Tìm theo tên, vị trí, ghi chú, cụm, người nhập, mã tag hoặc số ảnh…">
     <select id="fCum"><option value="">Tất cả cụm</option></select>
-    <select id="fNguoi"><option value="">Tất cả người nhập</option></select>
+    <input type="text" id="fNguoi" list="nguoiList" placeholder="👤 Người nhập…" autocomplete="off">
     <div class="date-group">
       Từ <input type="date" id="fTuNgay"> đến <input type="date" id="fDenNgay">
     </div>
@@ -269,7 +269,8 @@ h1,h2,h3,.display{font-family:'Barlow Semi Condensed',sans-serif;font-weight:800
         </div>
         <div class="field">
           <label>Người nhập *</label>
-          <select id="fdNguoi" required><option value="">— Chọn người nhập —</option></select>
+          <input type="text" id="fdNguoi" list="nguoiList" required placeholder="Gõ để tìm tên…" autocomplete="off">
+          <datalist id="nguoiList"></datalist>
         </div>
         <div class="field">
           <label>Ảnh thiết bị * (có thể thêm nhiều ảnh)</label>
@@ -305,7 +306,7 @@ h1,h2,h3,.display{font-family:'Barlow Semi Condensed',sans-serif;font-weight:800
 
 <script>
 /* ================= CONFIG ================= */
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwXyjYB0vp7zGt54kpfuDZuyIQL88NieKEmQVVpsG9il0z1kWvlC9FwTRy1UwsNXWZaCg/exec'; // <-- DÁN LINK WEB APP GOOGLE APPS SCRIPT VÀO ĐÂY
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwXyjYB0vp7zGt54kpfuDZuyIQL88NieKEmQVVpsG9il0z1kWvlC9FwTRy1UwsNXWZaCg/exec';
 const PAGE_SIZE = 24;
 
 /* ================= STATE ================= */
@@ -380,11 +381,11 @@ function renderMetaOptions() {
     sel.innerHTML = ''; sel.appendChild(keepFirst);
     META.clusters.forEach(c => sel.appendChild(new Option(c, c)));
   });
-  [document.getElementById('fNguoi'), document.getElementById('fdNguoi')].forEach(sel => {
-    const keepFirst = sel.options[0];
-    sel.innerHTML = ''; sel.appendChild(keepFirst);
-    META.users.forEach(u => sel.appendChild(new Option(u, u)));
-  });
+
+  const nguoiDl = document.getElementById('nguoiList');
+  nguoiDl.innerHTML = '';
+  META.users.forEach(u => nguoiDl.appendChild(new Option(u, u)));
+
   const dl = document.getElementById('viTriList');
   dl.innerHTML = '';
   META.locations.forEach(l => dl.appendChild(new Option(l, l)));
@@ -599,9 +600,17 @@ function compressImage(dataUrl, maxWidth, quality) {
 async function saveRecord() {
   const ten = document.getElementById('fdTen').value.trim();
   const cum = document.getElementById('fdCum').value;
-  const nguoi = document.getElementById('fdNguoi').value;
-  if (!ten || !cum || !nguoi || !pendingPhotos.length) {
-    showToast('Vui lòng điền đủ Tên thiết bị, Cụm, Người nhập và chọn ít nhất 1 ảnh', 'error'); return;
+  const nguoiInput = document.getElementById('fdNguoi').value.trim();
+  const nguoi = META.users.find(u => u.toLowerCase() === nguoiInput.toLowerCase()) || '';
+  if (!ten || !cum || !pendingPhotos.length) {
+    showToast('Vui lòng điền đủ Tên thiết bị, Cụm và chọn ít nhất 1 ảnh', 'error'); return;
+  }
+  if (!nguoiInput) {
+    showToast('Vui lòng nhập Người nhập', 'error'); return;
+  }
+  if (!nguoi) {
+    showToast('Tên "' + nguoiInput + '" chưa có trong danh sách — chọn đúng tên gợi ý, hoặc thêm tên mới vào tab NguoiDung trong Sheet trước', 'error');
+    return;
   }
   if (!APPS_SCRIPT_URL) { showToast('Chưa cấu hình APPS_SCRIPT_URL', 'error'); return; }
 
