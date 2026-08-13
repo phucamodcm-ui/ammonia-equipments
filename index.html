@@ -323,6 +323,8 @@ h1,h2,h3,.display{font-family:'Barlow Semi Condensed',sans-serif;font-weight:800
 /* ================= CONFIG ================= */
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwXyjYB0vp7zGt54kpfuDZuyIQL88NieKEmQVVpsG9il0z1kWvlC9FwTRy1UwsNXWZaCg/exec';
 const PAGE_SIZE = 10;
+const SEARCH_INITIAL_LIMIT = 150; // lô đầu tiên khi bắt đầu tìm kiếm mới, hiện nhiều hơn để thấy hết nhanh
+const LIST_CACHE_TTL_MS = 5 * 60 * 1000; // nhớ kết quả đã tải trong trình duyệt 5 phút, cuộn qua lại không cần gọi lại server
 
 /* ================= STATE ================= */
 let META = { clusters: [], users: [], locations: [] };
@@ -435,6 +437,56 @@ async function apiPost(body) {
   return res.json();
 }
 
+/* ---- Cache trình duyệt (IndexedDB) cho kết quả danh sách ----
+   Cuộn lên/xuống hoặc quay lại đúng bộ lọc+trang trong vòng 5 phút sẽ lấy
+   ngay từ máy, không cần gọi lại Apps Script — giảm tải và nhanh hơn hẳn. */
+const IDB_NAME = 'ammonia_cache';
+const IDB_STORE = 'listcache';
+let idbPromise = null;
+function openIDB() {
+  if (idbPromise) return idbPromise;
+  idbPromise = new Promise(resolve => {
+    if (!window.indexedDB) { resolve(null); return; }
+    try {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => { req.result.createObjectStore(IDB_STORE); };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch (e) { resolve(null); }
+  });
+  return idbPromise;
+}
+async function idbGet(key) {
+  const db = await openIDB();
+  if (!db) return null;
+  return new Promise(resolve => {
+    try {
+      const req = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    } catch (e) { resolve(null); }
+  });
+}
+async function idbSet(key, value) {
+  const db = await openIDB();
+  if (!db) return;
+  try { db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).put(value, key); } catch (e) { /* bỏ qua nếu lỗi */ }
+}
+async function idbClearAll() {
+  const db = await openIDB();
+  if (!db) return;
+  try { db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).clear(); } catch (e) { /* bỏ qua nếu lỗi */ }
+}
+
+async function cachedApiGetList(params) {
+  const key = 'list:' + JSON.stringify(params);
+  const cached = await idbGet(key);
+  if (cached && (Date.now() - cached.ts) < LIST_CACHE_TTL_MS) return cached.data;
+  const r = await apiGet(params);
+  if (r.ok) idbSet(key, { data: r, ts: Date.now() });
+  return r;
+}
+
 async function loadMeta() {
   if (!APPS_SCRIPT_URL) { META = { clusters: ['Cụm 200','Cụm 300','Cụm 400','Cụm 500','Cụm 700'], users: [], locations: [] }; renderMetaOptions(); return; }
   try {
@@ -461,6 +513,9 @@ function renderMetaOptions() {
 /**
  * Tải danh sách theo trang (phân trang cuộn vô hạn).
  * reset=true: bắt đầu lại từ đầu (đổi bộ lọc); reset=false: tải thêm trang kế tiếp.
+ * Khi bắt đầu 1 lượt tìm kiếm mới (reset=true + có từ khóa), tải hẳn lô lớn hơn
+ * (SEARCH_INITIAL_LIMIT) để thấy gần hết kết quả ngay, các lần cuộn thêm sau đó
+ * vẫn theo lô nhỏ PAGE_SIZE như duyệt thường.
  */
 async function loadRecords(reset) {
   if (!APPS_SCRIPT_URL) { renderEmptyNoConfig(); return; }
@@ -472,8 +527,10 @@ async function loadRecords(reset) {
   else { document.getElementById('loadMoreRow').style.display = 'block'; }
 
   try {
-    const params = Object.assign({ offset: currentOffset, limit: PAGE_SIZE }, currentFilterParams());
-    const r = await apiGet(params);
+    const isSearchQuery = !!document.getElementById('fSearch').value.trim();
+    const limit = (reset && isSearchQuery) ? SEARCH_INITIAL_LIMIT : PAGE_SIZE;
+    const params = Object.assign({ offset: currentOffset, limit: limit }, currentFilterParams());
+    const r = await cachedApiGetList(params);
     if (r.ok) {
       LOADED_RECORDS = LOADED_RECORDS.concat(r.records);
       currentOffset += r.records.length;
@@ -564,19 +621,41 @@ function cardHtml(r) {
     </div>`;
 }
 
-/** Trì hoãn việc gán src (và do đó việc decode ảnh) cho tới khi thẻ lọt vào khung nhìn. */
+/**
+ * Ảo hoá ảnh khi cuộn (2 tầng quan sát):
+ * - Vào gần khung nhìn (200px) → gán src để tải/hiện ảnh.
+ * - Trôi xa khung nhìn (>1500px, cả 2 hướng) → gỡ src để giải phóng bộ nhớ giải mã
+ *   ảnh của trình duyệt, giữ lại data-src để tự tải lại ngay khi cuộn về gần.
+ * Nhờ vậy cuộn qua hàng nghìn ảnh trong 1 phiên vẫn không làm nặng máy dần lên.
+ */
 function attachLazyThumbs() {
   const imgs = document.querySelectorAll('.lazy-thumb:not([data-observed])');
-  const obs = new IntersectionObserver(entries => {
+
+  const loadObs = new IntersectionObserver(entries => {
     entries.forEach(entry => {
-      if (entry.isIntersecting) {
-        const img = entry.target;
-        if (img.dataset.src) { img.src = img.dataset.src; img.removeAttribute('data-src'); }
-        obs.unobserve(img);
+      const img = entry.target;
+      if (entry.isIntersecting && img.dataset.src) {
+        img.src = img.dataset.src;
+        img.removeAttribute('data-src');
       }
     });
   }, { rootMargin: '200px' });
-  imgs.forEach(img => { img.setAttribute('data-observed', '1'); obs.observe(img); });
+
+  const unloadObs = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      const img = entry.target;
+      if (!entry.isIntersecting && img.getAttribute('src')) {
+        img.dataset.src = img.getAttribute('src'); // giữ lại để tải lại khi cuộn về
+        img.removeAttribute('src');
+      }
+    });
+  }, { rootMargin: '1500px' });
+
+  imgs.forEach(img => {
+    img.setAttribute('data-observed', '1');
+    loadObs.observe(img);
+    unloadObs.observe(img);
+  });
 }
 
 /** Sentinel ở cuối lưới — khi lọt vào khung nhìn sẽ tự tải trang kế tiếp. */
@@ -597,7 +676,18 @@ function ensureSentinel() {
 }
 
 /* ================= ADD MODAL ================= */
-let pendingPhotos = []; // [{ main: base64 1600px (lưu Drive), thumb: base64 240px (nhúng Sheet) }, ...]
+let pendingPhotos = []; // [{ main: base64 1600px (lưu Drive), mainMime, thumb: base64 360px (nhúng Sheet) }, ...]
+
+/** Kiểm tra trình duyệt có xuất được canvas sang WebP không (nhẹ hơn JPEG ~30-40%).
+ *  Nếu không hỗ trợ, compressImage() tự rớt về JPEG như trước — không có rủi ro
+ *  bị phình sang PNG (canvas sẽ âm thầm trả PNG nặng nếu ép dùng type không hỗ trợ). */
+const WEBP_SUPPORTED = (() => {
+  try {
+    const c = document.createElement('canvas');
+    c.width = c.height = 1;
+    return c.toDataURL('image/webp').indexOf('data:image/webp') === 0;
+  } catch (e) { return false; }
+})();
 
 function openAddModal() {
   document.getElementById('addForm').reset();
@@ -624,7 +714,7 @@ async function onPhotoSelected(e) {
         compressImage(dataUrl, 1600, 0.75),
         compressImage(dataUrl, 360, 0.6)
       ]);
-      pendingPhotos.push({ main, thumb });
+      pendingPhotos.push({ main: main.dataUrl, mainMime: main.mime, thumb: thumb.dataUrl });
     }
     renderPhotoQueue();
   } finally {
@@ -658,7 +748,8 @@ function compressImage(dataUrl, maxWidth, quality) {
       canvas.width = img.width * scale;
       canvas.height = img.height * scale;
       canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL('image/jpeg', quality));
+      const mime = WEBP_SUPPORTED ? 'image/webp' : 'image/jpeg';
+      resolve({ dataUrl: canvas.toDataURL(mime, quality), mime: mime });
     };
     img.src = dataUrl;
   });
@@ -690,7 +781,7 @@ async function saveRecord() {
       cum: cum,
       ghiChu: document.getElementById('fdGhiChu').value.trim(),
       nguoiNhap: nguoi,
-      images: pendingPhotos.map(p => ({ imageBase64: p.main, imageMime: 'image/jpeg', thumbBase64: p.thumb }))
+      images: pendingPhotos.map(p => ({ imageBase64: p.main, imageMime: p.mainMime || 'image/jpeg', thumbBase64: p.thumb }))
     };
     const r = await apiPost(body);
     if (r.ok) {
@@ -698,6 +789,7 @@ async function saveRecord() {
       showToast(`Đã lưu ${r.records.length} ảnh thành công`, 'success');
       loadMeta();
       loadRecords(true); // tải lại từ server để đúng thứ tự + số liệu thống kê
+      idbClearAll();
     } else {
       showToast(r.error || 'Lưu thất bại', 'error');
     }
@@ -741,6 +833,7 @@ async function deleteCurrentRecord() {
     if (r.ok) {
       closeDetailModal();
       showToast('Đã xóa', 'success');
+      idbClearAll();
       loadRecords(true);
     } else showToast(r.error || 'Xóa thất bại', 'error');
   } catch (e) { showToast('Lỗi kết nối khi xóa', 'error'); }
@@ -823,10 +916,13 @@ async function handlePrint() {
     if (!r.ok) throw new Error(r.error || 'Lỗi tải dữ liệu để in');
     const records = r.records;
     if (!records.length) { showToast('Không có dữ liệu khớp bộ lọc để in', 'error'); return; }
+    if (r.cappedForPrint) {
+      showToast(`Bộ lọc khớp ${r.total} thiết bị — chỉ in ${records.length} thiết bị mới nhất, thu hẹp bộ lọc để in đủ hơn`, 'error');
+    }
 
     document.getElementById('printHeader').innerHTML = `
       <h2>Danh sách thiết bị — Xưởng Ammonia, Phân Bón Cà Mau</h2>
-      <div class="sub">In lúc ${new Date().toLocaleString('vi-VN')} · ${escapeHtml(buildFilterSummaryText())} · Tổng cộng ${records.length} thiết bị</div>`;
+      <div class="sub">In lúc ${new Date().toLocaleString('vi-VN')} · ${escapeHtml(buildFilterSummaryText())} · ${r.cappedForPrint ? `In ${records.length}/${r.total} thiết bị (đã giới hạn)` : `Tổng cộng ${records.length} thiết bị`}</div>`;
 
     const grid = document.getElementById('grid');
     grid.innerHTML = records.map(r => `
